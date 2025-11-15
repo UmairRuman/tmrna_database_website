@@ -20,11 +20,7 @@ import time
 
 app = Flask(__name__)
 
-CORS(
-    app,
-    resources={r"/*": {"origins": "*"}},
-    supports_credentials=True,
-)
+CORS(app, origins="*", methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type"])
 
 @app.after_request
 def add_cors_headers(response):
@@ -32,6 +28,7 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
+
 # Configuration
 DB_PATH = os.environ.get('DB_PATH', 'tmrna.db')
 DIAMOND_DB = os.environ.get('DIAMOND_DB', 'peptide_db')

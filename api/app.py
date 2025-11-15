@@ -47,7 +47,7 @@ def handle_preflight():
         return response, 200
 
 # Configuration
-DB_PATH = os.environ.get('DB_PATH', 'tmrna.db')
+DB_PATH = os.path.join(os.path.dirname(__file__), 'tmrna.db')
 DIAMOND_DB = os.environ.get('DIAMOND_DB', 'peptide_db')
 BLAT_DB = os.environ.get('BLAT_DB', 'codons.fasta')
 CACHE_DIR = 'cache'

@@ -550,4 +550,4 @@ if __name__ == '__main__':
     print("  POST /api/search/codon   - Codon similarity")
     print("\n✨ Server ready! Press Ctrl+C to stop.\n")
     
-    app.run()
+    app.run(debug=True, host='0.0.0.0', port=8000)

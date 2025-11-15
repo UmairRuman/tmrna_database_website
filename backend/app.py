@@ -1,6 +1,3 @@
-# ============================================
-# FILE: backend/app.py
-# ============================================
 """
 Minimal Flask API for tmRNA Database
 Only handles DIAMOND (peptide) and BLAT (codon) similarity searches
@@ -20,14 +17,34 @@ import time
 
 app = Flask(__name__)
 
-CORS(app, origins="*", methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type"])
+# CRITICAL: Configure CORS properly for Vercel
+CORS(app, 
+     resources={r"/api/*": {"origins": "*"}},
+     methods=["GET", "POST", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"],
+     expose_headers=["Content-Type"],
+     supports_credentials=False,
+     max_age=3600)
 
 @app.after_request
 def add_cors_headers(response):
+    """Add CORS headers to every response"""
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Max-Age"] = "3600"
     return response
+
+@app.before_request
+def handle_preflight():
+    """Handle OPTIONS preflight requests"""
+    if request.method == "OPTIONS":
+        response = jsonify({"status": "ok"})
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Max-Age"] = "3600"
+        return response, 200
 
 # Configuration
 DB_PATH = os.environ.get('DB_PATH', 'tmrna.db')
@@ -89,60 +106,6 @@ BLOSUM62 = {
 }
 
 
-def parse_diamond_output(stdout_text, threshold):
-    """
-    Parse DIAMOND blastp output (tabular format)
-    Returns list of results with full database records
-    """
-    results = []
-    
-    if not stdout_text or not stdout_text.strip():
-        return results
-    
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
-    for line in stdout_text.strip().split('\n'):
-        if not line or line.startswith('#'):
-            continue
-        
-        fields = line.split('\t')
-        if len(fields) < 12:
-            continue
-        
-        try:
-            # DIAMOND output format:
-            # qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore
-            query_id = fields[0]
-            subject_id = fields[1]
-            percent_identity = float(fields[2])
-            alignment_length = int(fields[3])
-            evalue = float(fields[10])
-            bitscore = float(fields[11])
-            
-            # Filter by threshold
-            if percent_identity < threshold:
-                continue
-            
-            # Fetch full record from database
-            cursor.execute('SELECT * FROM tmrna_data WHERE identifier = ?', (subject_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                result_dict = dict(row)
-                result_dict['similarity'] = round(percent_identity, 2)
-                result_dict['e_value'] = f"{evalue:.2e}"
-                result_dict['bit_score'] = round(bitscore, 2)
-                result_dict['alignment_length'] = alignment_length
-                results.append(result_dict)
-        
-        except (ValueError, IndexError) as e:
-            print(f"⚠️ Error parsing DIAMOND line: {line[:50]}... Error: {e}")
-            continue
-    
-    conn.close()
-    return results
-
 def get_db_connection():
     """Create SQLite database connection"""
     conn = sqlite3.connect(DB_PATH)
@@ -156,33 +119,21 @@ def cache_result(timeout=3600):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            # Create cache key from request data
-            # Here, 'f' correctly refers to the original function
             cache_key = hashlib.md5(
                 f"{f.__name__}:{json.dumps(request.get_json(), sort_keys=True)}".encode()
             ).hexdigest()
             cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
             
-            # Check if cache exists and is fresh
             if os.path.exists(cache_file):
                 cache_age = time.time() - os.path.getmtime(cache_file)
                 if cache_age < timeout:
-                    # =========================================================
-                    # THE FIX: Changed 'f' to 'file_handle'
-                    # =========================================================
                     with open(cache_file, 'r') as file_handle:
                         print("✅ Returning response from FILE CACHE")
                         return jsonify(json.load(file_handle))
             
-            # Execute function and cache result
-            # Here, 'f' still correctly refers to the original function
             result = f(*args, **kwargs)
             
-            # Check if the result is valid and has JSON data before caching
             if result.status_code == 200 and result.is_json:
-                # =========================================================
-                # THE FIX: Changed 'f' to 'file_handle'
-                # =========================================================
                 with open(cache_file, 'w') as file_handle:
                     json.dump(result.get_json(), file_handle)
             
@@ -205,9 +156,12 @@ def clean_codon_sequence(sequence):
 # Health Check Endpoint
 # ============================================
 
-@app.route('/api/health', methods=['GET'])
+@app.route('/api/health', methods=['GET', 'OPTIONS'])
 def health_check():
     """Health check endpoint"""
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     return jsonify({
         'status': 'healthy',
         'database': os.path.exists(DB_PATH),
@@ -217,21 +171,22 @@ def health_check():
 
 
 # ============================================
-# Database Info Endpoint (for frontend initialization)
+# Database Info Endpoint
 # ============================================
 
-@app.route('/api/info', methods=['GET'])
+@app.route('/api/info', methods=['GET', 'OPTIONS'])
 def database_info():
     """Get database statistics"""
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get total records
         cursor.execute('SELECT COUNT(*) FROM tmrna_data')
         total_records = cursor.fetchone()[0]
         
-        # Get unique organisms
         cursor.execute('SELECT COUNT(DISTINCT organism_name) FROM tmrna_data WHERE organism_name != ""')
         unique_organisms = cursor.fetchone()[0]
         
@@ -247,12 +202,8 @@ def database_info():
 
 
 # ============================================
-# Peptide Similarity Search (DIAMOND)
+# Peptide Similarity Search
 # ============================================
-
-# =========================================================
-# REPLACE your old search_peptide function with this complete, corrected version
-# =========================================================
 
 def get_blosum_score(aa1, aa2):
     """Get BLOSUM62 score for two amino acids"""
@@ -262,50 +213,42 @@ def get_blosum_score(aa1, aa2):
     elif (aa2, aa1) in BLOSUM62:
         return BLOSUM62[(aa2, aa1)]
     else:
-        return -4  # Default penalty for unknown amino acids
+        return -4
 
 
 def calculate_peptide_similarity_blosum(seq1, seq2):
-    """
-    Calculate peptide similarity using BLOSUM62 matrix
-    Returns percentage similarity (0-100)
-    """
-    # Use shorter sequence length as reference
+    """Calculate peptide similarity using BLOSUM62 matrix"""
     min_len = min(len(seq1), len(seq2))
     max_len = max(len(seq1), len(seq2))
     
     if min_len == 0:
         return 0.0
     
-    # Calculate alignment score
     score = 0
     max_possible_score = 0
     
     for i in range(min_len):
         blosum_score = get_blosum_score(seq1[i], seq2[i])
         score += blosum_score
-        # Max possible score is identity (diagonal of BLOSUM62)
         max_possible_score += get_blosum_score(seq1[i], seq1[i])
     
-    # Apply length penalty for different lengths
     length_penalty = min_len / max_len
     
-    # Normalize to 0-100%
     if max_possible_score > 0:
         similarity = (score / max_possible_score) * 100 * length_penalty
     else:
         similarity = 0.0
     
-    return max(0.0, similarity)  # Ensure non-negative
+    return max(0.0, similarity)
 
 
-@app.route('/api/search/peptide', methods=['POST' ,"OPTIONS"])
+@app.route('/api/search/peptide', methods=['POST', 'OPTIONS'])
 @cache_result(timeout=3600)
 def search_peptide():
-    """
-    Peptide similarity search using Python + BLOSUM62
-    (Semantic understanding like DIAMOND, works for short sequences)
-    """
+    """Peptide similarity search using BLOSUM62"""
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     start_time = time.time()
     
     try:
@@ -320,7 +263,6 @@ def search_peptide():
         if not sequence:
             return jsonify({'error': 'Sequence is required'}), 400
 
-        # Clean sequence
         clean_seq = sequence.replace('?', '').replace('*', '').replace(' ', '').replace('\n', '').strip().upper()
         
         print(f"🔍 Input sequence: {sequence}")
@@ -331,43 +273,36 @@ def search_peptide():
         if len(clean_seq) < 3:
             return jsonify({'error': 'Sequence too short (minimum 3 amino acids)'}), 400
 
-        # Search through database using BLOSUM62
         print(f"🔍 Searching database with BLOSUM62 algorithm...")
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Fetch all peptide sequences
         cursor.execute('SELECT identifier, tag_peptide FROM tmrna_data')
         all_sequences = cursor.fetchall()
         
         results = []
         processed = 0
         
-        # Calculate similarity for each sequence
         for row in all_sequences:
             identifier = row['identifier']
             peptide = row['tag_peptide']
             
-            # Clean database peptide
             db_seq = peptide.replace('?', '').replace('*', '').strip().upper()
             
             if len(db_seq) < 3:
                 continue
             
-            # Calculate BLOSUM62-based similarity
             similarity = calculate_peptide_similarity_blosum(clean_seq, db_seq)
             
-            # Only include if above threshold
             if similarity >= threshold:
-                # Fetch full record
                 cursor.execute('SELECT * FROM tmrna_data WHERE identifier = ?', (identifier,))
                 full_row = cursor.fetchone()
                 
                 if full_row:
                     result_dict = dict(full_row)
                     result_dict['similarity'] = round(similarity, 2)
-                    result_dict['e_value'] = 'N/A'  # Python algorithm doesn't calculate e-values
+                    result_dict['e_value'] = 'N/A'
                     result_dict['algorithm'] = 'BLOSUM62'
                     results.append(result_dict)
             
@@ -377,10 +312,7 @@ def search_peptide():
         
         conn.close()
         
-        # Sort by similarity (highest first)
         results.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # Limit results to top 500
         results = results[:500]
         
         search_time = time.time() - start_time
@@ -404,36 +336,29 @@ def search_peptide():
 
 
 # ============================================
-# Codon Similarity Search (BLAT)
+# Codon Similarity Search
 # ============================================
 
 def calculate_nucleotide_similarity(seq1, seq2):
-    """
-    Calculate simple nucleotide similarity between two sequences
-    Returns percentage similarity
-    """
-    # Align to shorter sequence length
+    """Calculate simple nucleotide similarity"""
     min_len = min(len(seq1), len(seq2))
     
     if min_len == 0:
         return 0.0
     
-    # Count matches
     matches = sum(1 for i in range(min_len) if seq1[i].lower() == seq2[i].lower())
-    
-    # Calculate similarity percentage
     similarity = (matches / min_len) * 100
     
     return similarity
 
 
-@app.route('/api/search/codon', methods=['POST',"OPTIONS"])
+@app.route('/api/search/codon', methods=['POST', 'OPTIONS'])
 @cache_result(timeout=3600)
 def search_codon():
-    """
-    Codon similarity search using simple nucleotide alignment
-    (Fast alternative to BLAT for demo purposes)
-    """
+    """Codon similarity search using simple nucleotide alignment"""
+    if request.method == 'OPTIONS':
+        return '', 204
+    
     start_time = time.time()
     
     try:
@@ -448,53 +373,41 @@ def search_codon():
         if not sequence:
             return jsonify({'error': 'Sequence is required'}), 400
         
-        # Clean sequence
         clean_seq = clean_codon_sequence(sequence)
         
         if len(clean_seq) < 15:
             return jsonify({'error': 'Sequence too short (minimum 15 nucleotides)'}), 400
         
-        # Search through database
         print(f"🔍 Searching for codon similarity with threshold {threshold}%...")
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Fetch all codon sequences
         cursor.execute('SELECT identifier, codons FROM tmrna_data')
         all_sequences = cursor.fetchall()
         
         results = []
         
-        # Calculate similarity for each sequence
         for row in all_sequences:
             identifier = row['identifier']
             codons = row['codons']
             
-            # Clean database codon sequence
             db_seq = clean_codon_sequence(codons)
-            
-            # Calculate similarity
             similarity = calculate_nucleotide_similarity(clean_seq, db_seq)
             
-            # Only include if above threshold
             if similarity >= threshold:
-                # Fetch full record
                 cursor.execute('SELECT * FROM tmrna_data WHERE identifier = ?', (identifier,))
                 full_row = cursor.fetchone()
                 
                 if full_row:
                     result_dict = dict(full_row)
                     result_dict['similarity'] = round(similarity, 2)
-                    result_dict['e_value'] = 'N/A'  # Simple algorithm doesn't calculate e-values
+                    result_dict['e_value'] = 'N/A'
                     results.append(result_dict)
         
         conn.close()
         
-        # Sort by similarity (highest first)
         results.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        # Limit results to top 500
         results = results[:500]
         
         search_time = time.time() - start_time
@@ -507,7 +420,7 @@ def search_codon():
             'search_time': round(search_time, 2),
             'query_length': len(clean_seq),
             'threshold': threshold,
-            'algorithm': 'Simple Nucleotide Alignment'  # Indicate which algorithm was used
+            'algorithm': 'Simple Nucleotide Alignment'
         })
     
     except Exception as e:
@@ -534,7 +447,6 @@ def internal_error(error):
 # ============================================
 
 if __name__ == '__main__':
-    # Check if required files exist
     if not os.path.exists(DB_PATH):
         print(f"⚠️  Warning: Database file not found: {DB_PATH}")
     

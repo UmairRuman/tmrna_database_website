@@ -3,10 +3,12 @@ import { Search, Dna, Sparkles, Database, Download, ArrowRight, Zap, Loader2, Al
 import { useDatabase } from './hooks/useDatabase';
 import { useSearch } from './hooks/useSearch';
 import { exportToCSV } from './services/export';
+import { AutocompleteDropdown } from './components/Autocomplete';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('keyword');
   const [keywordQuery, setKeywordQuery] = useState('');
+  const [autocompleteSuggestions, setAutocompleteSuggestions] = useState([]);
   const [peptideQuery, setPeptideQuery] = useState('');
   const [codonQuery, setCodonQuery] = useState('');
   const [peptideThreshold, setPeptideThreshold] = useState(50);
@@ -15,7 +17,7 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(true);
 
   // Database hook (for local keyword search)
-  const { isInitialized, isLoading: dbLoading, error: dbError, progress } = useDatabase();
+  const { isInitialized, isLoading: dbLoading, error: dbError, progress, db } = useDatabase();
 
   // Search hook
   const {
@@ -29,17 +31,44 @@ export default function App() {
     clearResults
   } = useSearch();
 
-  // Get autocomplete suggestions from local database
-  const autocompleteSuggestions = useMemo(() => {
-    if (!isInitialized || !keywordQuery || keywordQuery.length < 2) return [];
-    
+  // Real-time autocomplete with debouncing
+  useEffect(() => {
+  console.log('🔍 useEffect triggered', { 
+    isInitialized, 
+    keywordQuery, 
+    queryLength: keywordQuery.length 
+  });
+
+  if (!isInitialized || !keywordQuery || keywordQuery.length < 3) {
+    console.log('⏸️ Skipping autocomplete - conditions not met');
+    setAutocompleteSuggestions([]);
+    setShowAutocomplete(false);
+    return;
+  }
+
+  // Debounce: wait 200ms after user stops typing
+  const timeoutId = setTimeout(() => {
     try {
-      const { db } = require('./services/database');
-      return db.databaseService.getAutocomplete(keywordQuery);
-    } catch {
-      return [];
+      console.log('🚀 Fetching suggestions for:', keywordQuery);
+      const suggestions = db.getIdentifierSuggestions(keywordQuery, 10);
+      console.log('✅ Got suggestions:', suggestions);
+      setAutocompleteSuggestions(suggestions);
+      setShowAutocomplete(suggestions.length > 0);
+    } catch (error) {
+      console.error('❌ Autocomplete error:', error);
+      setAutocompleteSuggestions([]);
     }
-  }, [keywordQuery, isInitialized]);
+  }, 200);
+
+  return () => clearTimeout(timeoutId);
+}, [keywordQuery, isInitialized, db]);
+
+  const handleAutocompleteSelect = (identifier) => {
+    setKeywordQuery(identifier);
+    setShowAutocomplete(false);
+    // Optionally auto-search
+    setTimeout(() => handleSearch(), 100);
+  };
 
   // Filter results by threshold (client-side filtering)
   const filteredResults = useMemo(() => {
@@ -53,6 +82,8 @@ export default function App() {
     setKeywordQuery('');
     setPeptideQuery('');
     setCodonQuery('');
+    setShowAutocomplete(false);
+    setAutocompleteSuggestions([]);
   }, [activeTab]);
 
   const handleSearch = async () => {
@@ -98,7 +129,7 @@ export default function App() {
             <Database className="w-8 h-8 text-white absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2" />
           </div>
           <h2 className="text-2xl font-bold text-white mb-2">Loading Database...</h2>
-          <p className="text-gray-400 mb-4">Downloading tmRNA database (~15 MB)</p>
+          <p className="text-gray-400 mb-4">Downloading tmRNA database (~54 MB)</p>
           <div className="w-64 mx-auto bg-gray-800 rounded-full h-2 overflow-hidden">
             <div 
               className="bg-gradient-to-r from-blue-600 to-purple-600 h-full transition-all duration-300"
@@ -145,7 +176,7 @@ export default function App() {
                   tmRNA Database
                 </h1>
                 <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  67,383 sequences • Powered by DIAMOND & BLAT
+                  67,383 sequences • Powered by BLOSUM62 & Simple Alignment
                 </p>
               </div>
             </div>
@@ -168,8 +199,8 @@ export default function App() {
         <div className="flex gap-2 mb-8">
           {[
             { id: 'keyword', label: 'Keyword Search', icon: Search, badge: 'Instant' },
-            { id: 'peptide', label: 'Peptide Similarity', icon: Sparkles, badge: 'DIAMOND' },
-            { id: 'codon', label: 'Codon Similarity', icon: Dna, badge: 'BLAT' }
+            { id: 'peptide', label: 'Peptide Similarity', icon: Sparkles, badge: 'BLOSUM62' },
+            { id: 'codon', label: 'Codon Similarity', icon: Dna, badge: 'Python' }
           ].map(tab => (
             <button
               key={tab.id}
@@ -203,57 +234,86 @@ export default function App() {
         <div className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} rounded-xl border p-6 mb-8 shadow-xl`}>
           {/* Keyword Search */}
           {activeTab === 'keyword' && (
-            <div className="space-y-4">
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Search by Identifier or Organism
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={keywordQuery}
-                    onChange={(e) => {
-                      setKeywordQuery(e.target.value);
-                      setShowAutocomplete(true);
-                    }}
-                    onFocus={() => setShowAutocomplete(true)}
-                    onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                    placeholder="e.g., Magnetovibrio, URS0000C900BF..."
-                    className={`w-full px-4 py-3 rounded-lg border ${
-                      isDarkMode 
-                        ? 'bg-gray-900 border-gray-600 text-white placeholder-gray-500' 
-                        : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-400'
-                    } focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all`}
-                  />
-                  
-                  {/* Autocomplete Dropdown */}
-                  {showAutocomplete && autocompleteSuggestions.length > 0 && (
-                    <div className={`absolute z-10 w-full mt-2 ${isDarkMode ? 'bg-gray-700' : 'bg-white'} rounded-lg shadow-lg border ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`}>
-                      {autocompleteSuggestions.map((suggestion, idx) => (
-                        <button
-                          key={idx}
-                          onClick={() => {
-                            setKeywordQuery(suggestion);
-                            setShowAutocomplete(false);
-                          }}
-                          className={`w-full px-4 py-3 text-left ${
-                            isDarkMode 
-                              ? 'hover:bg-gray-600 text-gray-200' 
-                              : 'hover:bg-gray-50 text-gray-800'
-                          } first:rounded-t-lg last:rounded-b-lg transition-colors`}
-                        >
-                          {suggestion}
-                        </button>
-                      ))}
+  <div className="space-y-4">
+    <div>
+      <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+        Search by Identifier or Organism
+      </label>
+      <div className="relative">
+        <input
+          type="text"
+          value={keywordQuery}
+          onChange={(e) => {
+            setKeywordQuery(e.target.value);
+            setShowAutocomplete(true);
+          }}
+          onFocus={() => setShowAutocomplete(autocompleteSuggestions.length > 0)}
+          onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
+          onKeyPress={(e) => {
+            if (e.key === 'Enter') {
+              setShowAutocomplete(false);
+              handleSearch();
+            }
+          }}
+          placeholder="e.g., Magnetovibrio, URS0000C900BF, Planctomycetes..."
+          className={`w-full px-4 py-3 rounded-lg border ${
+            isDarkMode 
+              ? 'bg-gray-900 border-gray-600 text-white placeholder-gray-500' 
+              : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-400'
+          } focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all`}
+        />
+        
+        {/* Real-time Autocomplete */}
+        {showAutocomplete && autocompleteSuggestions.length > 0 && (
+          <div className={`absolute z-50 w-full mt-2 ${
+            isDarkMode ? 'bg-gray-700' : 'bg-white'
+          } rounded-lg shadow-xl border ${
+            isDarkMode ? 'border-gray-600' : 'border-gray-200'
+          } max-h-96 overflow-y-auto`}>
+            <div className={`px-3 py-2 text-xs ${
+              isDarkMode ? 'text-gray-400 border-gray-600' : 'text-gray-500 border-gray-200'
+            } border-b flex items-center gap-2`}>
+              <Search className="w-3 h-3" />
+              {autocompleteSuggestions.length} suggestion{autocompleteSuggestions.length !== 1 ? 's' : ''} found
+            </div>
+            
+            {autocompleteSuggestions.map((suggestion, idx) => (
+              <button
+                key={idx}
+                onClick={() => handleAutocompleteSelect(suggestion.identifier)}
+                className={`w-full px-4 py-3 text-left transition-colors ${
+                  isDarkMode 
+                    ? 'hover:bg-gray-600 text-gray-200' 
+                    : 'hover:bg-gray-50 text-gray-800'
+                } ${idx === autocompleteSuggestions.length - 1 ? '' : 'border-b'} ${
+                  isDarkMode ? 'border-gray-600' : 'border-gray-100'
+                }`}
+              >
+                <div className="flex flex-col gap-1">
+                  <div className={`text-sm font-mono ${
+                    isDarkMode ? 'text-blue-400' : 'text-blue-600'
+                  }`}>
+                    {suggestion.identifier}
+                  </div>
+                  {suggestion.organism && (
+                    <div className={`text-xs ${
+                      isDarkMode ? 'text-gray-400' : 'text-gray-600'
+                    }`}>
+                      {suggestion.organism}
                     </div>
                   )}
                 </div>
-                <p className={`text-xs mt-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  ⚡ Instant search powered by local database
-                </p>
-              </div>
-            </div>
-          )}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className={`text-xs mt-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+        ⚡ Type at least 3 characters for real-time suggestions
+      </p>
+    </div>
+  </div>
+)}
 
           {/* Peptide Search */}
           {activeTab === 'peptide' && (

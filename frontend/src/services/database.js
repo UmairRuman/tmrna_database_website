@@ -62,6 +62,58 @@ class DatabaseService {
     }
   }
 
+  // Add this method to DatabaseService class
+getIdentifierSuggestions(query, limit = 10) {
+  if (!this.db) {
+    throw new Error('Database not initialized');
+  }
+
+  const cleanQuery = query.trim();
+  if (!cleanQuery || cleanQuery.length < 3) {
+    return [];
+  }
+
+  try {
+    // Search identifiers AND organism names
+    const sqlQuery = `
+      SELECT identifier, organism_name
+      FROM tmrna_data
+      WHERE identifier LIKE ? 
+         OR organism_name LIKE ?
+      LIMIT ${limit}
+    `;
+
+    const result = this.db.exec(sqlQuery, [
+      `%${cleanQuery}%`,
+      `%${cleanQuery}%`
+    ]);
+
+    if (!result.length) {
+      return [];
+    }
+
+    const columns = result[0].columns;
+    const values = result[0].values;
+
+    const suggestions = values.map(row => {
+      return {
+        identifier: row[0],
+        organism: row[1],
+        // Determine what matched
+        matchType: row[0].toLowerCase().includes(cleanQuery.toLowerCase()) 
+          ? 'identifier' 
+          : 'organism'
+      };
+    });
+
+    return suggestions;
+
+  } catch (error) {
+    console.error('Autocomplete error:', error);
+    return [];
+  }
+}
+
   searchKeyword(query, limit = 500) {
     if (!this.db) {
       throw new Error('Database not initialized');

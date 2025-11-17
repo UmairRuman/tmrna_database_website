@@ -152,6 +152,38 @@ def clean_codon_sequence(sequence):
     return sequence.replace('-', '').replace(' ', '').replace('\n', '').strip().lower()
 
 
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint - API information"""
+    return jsonify({
+        'message': 'tmRNA Database API',
+        'status': 'online',
+        'version': '1.0',
+        'endpoints': {
+            'health': '/api/health',
+            'info': '/api/info',
+            'search_peptide': '/api/search/peptide',
+            'search_codon': '/api/search/codon'
+        },
+        'documentation': 'https://github.com/UmairRuman/tmrna_database_website'
+    })
+
+
+@app.route('/api', methods=['GET'])
+def api_index():
+    """API base endpoint"""
+    return jsonify({
+        'message': 'tmRNA Database API',
+        'status': 'online',
+        'version': '1.0',
+        'endpoints': {
+            'health': '/api/health',
+            'info': '/api/info',
+            'search_peptide': '/api/search/peptide',
+            'search_codon': '/api/search/codon'
+        }
+    })
+
 # ============================================
 # Health Check Endpoint
 # ============================================

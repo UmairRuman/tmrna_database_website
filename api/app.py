@@ -47,13 +47,17 @@ def handle_preflight():
         return response, 200
 
 # Configuration
-DB_PATH = os.path.join(os.path.dirname(__file__), 'tmrna.db')
+# CRITICAL: Use /tmp for cache directory (only writable directory in Vercel)
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tmrna.db')
 DIAMOND_DB = os.environ.get('DIAMOND_DB', 'peptide_db')
 BLAT_DB = os.environ.get('BLAT_DB', 'codons.fasta')
-CACHE_DIR = 'cache'
+CACHE_DIR = '/tmp/cache'  # CHANGED: Use /tmp instead of 'cache'
 
-# Create cache directory
-os.makedirs(CACHE_DIR, exist_ok=True)
+# Create cache directory (only if it doesn't exist)
+try:
+    os.makedirs(CACHE_DIR, exist_ok=True)
+except Exception as e:
+    print(f"⚠️ Warning: Could not create cache directory: {e}")
 
 
 # ============================================
@@ -108,6 +112,13 @@ BLOSUM62 = {
 
 def get_db_connection():
     """Create SQLite database connection"""
+    if not os.path.exists(DB_PATH):
+        print(f"❌ ERROR: Database not found at {DB_PATH}")
+        print(f"📁 Current directory: {os.getcwd()}")
+        print(f"📁 Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+        print(f"📁 Files in directory: {os.listdir(os.path.dirname(os.path.abspath(__file__)))}")
+        raise FileNotFoundError(f"Database not found at {DB_PATH}")
+    
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -115,29 +126,40 @@ def get_db_connection():
 
 def cache_result(timeout=3600):
     """Decorator to cache API results"""
-    os.makedirs(CACHE_DIR, exist_ok=True)
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            cache_key = hashlib.md5(
-                f"{f.__name__}:{json.dumps(request.get_json(), sort_keys=True)}".encode()
-            ).hexdigest()
-            cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
-            
-            if os.path.exists(cache_file):
-                cache_age = time.time() - os.path.getmtime(cache_file)
-                if cache_age < timeout:
-                    with open(cache_file, 'r') as file_handle:
-                        print("✅ Returning response from FILE CACHE")
-                        return jsonify(json.load(file_handle))
-            
-            result = f(*args, **kwargs)
-            
-            if result.status_code == 200 and result.is_json:
-                with open(cache_file, 'w') as file_handle:
-                    json.dump(result.get_json(), file_handle)
-            
-            return result
+            try:
+                # Only use cache if CACHE_DIR exists and is writable
+                if os.path.exists(CACHE_DIR) and os.access(CACHE_DIR, os.W_OK):
+                    cache_key = hashlib.md5(
+                        f"{f.__name__}:{json.dumps(request.get_json(), sort_keys=True)}".encode()
+                    ).hexdigest()
+                    cache_file = os.path.join(CACHE_DIR, f"{cache_key}.json")
+                    
+                    if os.path.exists(cache_file):
+                        cache_age = time.time() - os.path.getmtime(cache_file)
+                        if cache_age < timeout:
+                            with open(cache_file, 'r') as file_handle:
+                                print("✅ Returning response from FILE CACHE")
+                                return jsonify(json.load(file_handle))
+                    
+                    result = f(*args, **kwargs)
+                    
+                    if result.status_code == 200 and result.is_json:
+                        try:
+                            with open(cache_file, 'w') as file_handle:
+                                json.dump(result.get_json(), file_handle)
+                        except Exception as e:
+                            print(f"⚠️ Warning: Could not write cache: {e}")
+                    
+                    return result
+                else:
+                    # Cache not available, just run the function
+                    return f(*args, **kwargs)
+            except Exception as e:
+                print(f"⚠️ Cache error: {e}, running without cache")
+                return f(*args, **kwargs)
         return wrapper
     return decorator
 
@@ -197,8 +219,7 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'database': os.path.exists(DB_PATH),
-        'diamond': os.path.exists(f"{DIAMOND_DB}.dmnd"),
-        'blat': os.path.exists(BLAT_DB)
+        'cache_available': os.path.exists(CACHE_DIR) and os.access(CACHE_DIR, os.W_OK)
     })
 
 
@@ -482,17 +503,9 @@ if __name__ == '__main__':
     if not os.path.exists(DB_PATH):
         print(f"⚠️  Warning: Database file not found: {DB_PATH}")
     
-    if not os.path.exists(f"{DIAMOND_DB}.dmnd"):
-        print(f"⚠️  Warning: DIAMOND database not found: {DIAMOND_DB}.dmnd")
-    
-    if not os.path.exists(BLAT_DB):
-        print(f"⚠️  Warning: BLAT database not found: {BLAT_DB}")
-    
     print("\n🚀 Starting tmRNA Database API Server")
     print("="*50)
     print(f"📊 Database: {DB_PATH}")
-    print(f"🧬 DIAMOND DB: {DIAMOND_DB}.dmnd")
-    print(f"🧬 BLAT DB: {BLAT_DB}")
     print(f"🌐 Server: http://localhost:8000")
     print("="*50)
     print("\nAPI Endpoints:")
